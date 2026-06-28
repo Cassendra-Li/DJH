@@ -102,7 +102,7 @@ def run(cfg, save_name):
         model.train()
         tl, ta, n = 0.0, 0.0, 0
         for sb, tb in zip(loaders['source_train'], loaders['target_train']):
-            out = model(sb, tb, 'train')
+            out = model(sb, tb, 'train', gw_weight=gw_w)
             loss = ce(out['logits'], out['labels'])
             if model.use_gw and gw_w > 0:
                 loss = loss + gw_w * out['gw_loss']
@@ -178,8 +178,10 @@ if __name__ == '__main__':
         cfg['train']['n_shot'] = args.shots
         cfg['train']['epochs'] = args.epochs
 
+    # CLI overrides (always applied, even with stage presets)
     cfg['train']['batch_size'] = args.batch_size
     cfg['train']['lr'] = args.lr
+    cfg['train']['epochs'] = args.epochs
     cfg['experiment']['source_load'] = args.source
     cfg['experiment']['target_load'] = args.target
 

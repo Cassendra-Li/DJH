@@ -118,7 +118,7 @@ class RPGWNet(nn.Module):
 
         return fused
 
-    def forward(self, src_batch, tgt_batch, mode="train"):
+    def forward(self, src_batch, tgt_batch, mode="train", gw_weight: float = 0.0):
         device = next(self.parameters()).device
 
         # ---- Step 1: CNN + CWT feature fusion ----
@@ -137,9 +137,9 @@ class RPGWNet(nn.Module):
         H_s_global = H_s.mean(dim=1)  # (B, D)
         H_t_global = H_t.mean(dim=1)
 
-        # ---- Step 3: GW structure alignment (FIXED: full batch) ----
+        # ---- Step 3: GW structure alignment (FIXED: full batch, skip if weight=0) ----
         gw_loss = torch.tensor(0.0, device=device)
-        if self.use_gw and mode == "train":
+        if self.use_gw and mode == "train" and gw_weight > 0:
             try:
                 gw_result = self.gw_align(C_s, C_t)   # ✅ full batch (B,N,N)
                 gw_loss = gw_result["gw_loss"]
