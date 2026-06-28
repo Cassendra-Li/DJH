@@ -35,7 +35,7 @@ class GWAlignment(nn.Module):
 
     def __init__(
         self,
-        gw_type: str = "partial",
+        type: str = "partial",
         epsilon: float = 0.8,
         alpha: float = 0.7,
         partial_mass: float = 0.85,
@@ -44,7 +44,7 @@ class GWAlignment(nn.Module):
     ):
         """
         Args:
-            gw_type:      GW variant: 'vanilla' | 'entropic' | 'fused' | 'partial'
+            type:      GW variant: 'vanilla' | 'entropic' | 'fused' | 'partial' | 'none'
             epsilon:      Entropy regularization strength (for EGW/FGW)
             alpha:        Feature vs structure trade-off (for FGW, 0=W, 1=GW)
             partial_mass: Transport mass fraction (for Partial GW, 0<m<=1)
@@ -52,7 +52,7 @@ class GWAlignment(nn.Module):
             reg:          Overall GW loss weight
         """
         super().__init__()
-        self.gw_type = gw_type
+        self.gw_type = type
         self.epsilon = epsilon
         self.alpha = alpha
         self.partial_mass = partial_mass

@@ -1,103 +1,34 @@
 """
 CWRU Bearing Dataset Downloader
 ================================
-Automatically downloads the Case Western Reserve University (CWRU)
-bearing fault dataset.
-
-Reference: https://engineering.case.edu/bearingdatacenter
-
-The dataset contains:
-- Normal baseline data (4 loads: 0, 1, 2, 3 hp)
-- Inner race fault (0.007", 0.014", 0.021" diameters)
-- Outer race fault (0.007", 0.014", 0.021" diameters)
-- Ball fault (0.007", 0.014", 0.021" diameters)
-- Sampling rate: 12 kHz (drive-end) / 48 kHz (fan-end)
+Downloads the Case Western Reserve University (CWRU) bearing fault dataset
+via a GitHub mirror (original Case website URLs are no longer stable).
 
 Usage:
-    python download_cwru.py                     # download all
-    python download_cwru.py --load 0 1 2 3      # specific loads only
-    python download_cwru.py --fault_type IR     # specific fault type
+    python download_cwru.py                     # clone from GitHub mirror
 """
 
-import os
+import subprocess
 import sys
-import argparse
-import urllib.request
-import urllib.error
 from pathlib import Path
 
-# ========== CWRU File URLs ==========
-# CWRU data is publicly available via the Case website.
-# Each .mat file corresponds to one (fault_type, fault_size, load) combination.
+_MIRROR_REPO = "https://github.com/AiChiXiaoXiongBingGan/CWRU-dataset.git"
 
-_BASE_URL = "https://engineering.case.edu/bearingdatacenter/sites/bearingdatacenter.case.edu/files/uploads/"
-
-# File naming: <fault_type>_<fault_size>_<load>.mat
-# Fault types: Normal, IR (Inner Race), OR (Outer Race), B (Ball)
-# Fault sizes: 007, 014, 021 (inches x 1000)
-# Loads: 0, 1, 2, 3 (hp motor load)
-
-CWRU_FILES = {
-    # (fault_type, fault_size, load_hp) -> filename
-    # --- Normal ---
-    ("Normal", None, 0):  "97.mat",
-    ("Normal", None, 1):  "98.mat",
-    ("Normal", None, 2):  "99.mat",
-    ("Normal", None, 3):  "100.mat",
-    # --- Inner Race 0.007" ---
-    ("IR", "007", 0): "105.mat",
-    ("IR", "007", 1): "106.mat",
-    ("IR", "007", 2): "107.mat",
-    ("IR", "007", 3): "108.mat",
-    # --- Inner Race 0.014" ---
-    ("IR", "014", 0): "169.mat",
-    ("IR", "014", 1): "170.mat",
-    ("IR", "014", 2): "171.mat",
-    ("IR", "014", 3): "172.mat",
-    # --- Inner Race 0.021" ---
-    ("IR", "021", 0): "209.mat",
-    ("IR", "021", 1): "210.mat",
-    ("IR", "021", 2): "211.mat",
-    ("IR", "021", 3): "212.mat",
-    # --- Outer Race 0.007" ---
-    ("OR", "007", 0): "130.mat",
-    ("OR", "007", 1): "131.mat",
-    ("OR", "007", 2): "132.mat",
-    ("OR", "007", 3): "133.mat",
-    # --- Outer Race 0.014" ---
-    ("OR", "014", 0): "197.mat",
-    ("OR", "014", 1): "198.mat",
-    ("OR", "014", 2): "199.mat",
-    ("OR", "014", 3): "200.mat",
-    # --- Outer Race 0.021" ---
-    ("OR", "021", 0): "234.mat",
-    ("OR", "021", 1): "235.mat",
-    ("OR", "021", 2): "236.mat",
-    ("OR", "021", 3): "237.mat",
-    # --- Ball 0.007" ---
-    ("B", "007", 0):  "118.mat",
-    ("B", "007", 1):  "119.mat",
-    ("B", "007", 2):  "120.mat",
-    ("B", "007", 3):  "121.mat",
-    # --- Ball 0.014" ---
-    ("B", "014", 0):  "185.mat",
-    ("B", "014", 1):  "186.mat",
-    ("B", "014", 2):  "187.mat",
-    ("B", "014", 3):  "188.mat",
-    # --- Ball 0.021" ---
-    ("B", "021", 0):  "222.mat",
-    ("B", "021", 1):  "223.mat",
-    ("B", "021", 2):  "224.mat",
-    ("B", "021", 3):  "225.mat",
+# Fault type + size → subdirectory name in the mirror repo
+_FAULT_DIR_MAP = {
+    ("Normal", None):  "normal",
+    ("IR", "007"):     "inner_07",
+    ("IR", "014"):     "inner_14",
+    ("IR", "021"):     "inner_21",
+    ("OR", "007"):     "outer_07",
+    ("OR", "014"):     "outer_14",
+    ("OR", "021"):     "outer_21",
+    ("B", "007"):      "ball_07",
+    ("B", "014"):       "ball_14",
+    ("B", "021"):       "ball_21",
 }
 
-# Drive-end accelerometer data (DE), sampling rate 12 kHz
-# Each .mat file has variable containing the signal:
-#   - DE:  drive-end vibration signal
-#   - FE:  fan-end vibration signal (48 kHz)
-#   - BA:  base accelerometer
-
-# Label mapping: fault_type + fault_size -> class_id
+# Label mapping
 _LABEL_MAP = {
     "Normal": 0,
     "IR007": 1, "IR014": 2, "IR021": 3,
@@ -105,81 +36,92 @@ _LABEL_MAP = {
     "B007": 7,  "B014": 8,  "B021": 9,
 }
 
-NUM_CLASSES = len(_LABEL_MAP)  # 10
+NUM_CLASSES = 10
 
 
 def get_label(fault_type: str, fault_size: str = None) -> int:
-    """Map fault type + size to integer class label."""
+    """Map fault type + size to integer class label (0-9)."""
     if fault_type == "Normal":
         return _LABEL_MAP["Normal"]
-    key = f"{fault_type}{fault_size}"
-    return _LABEL_MAP[key]
+    return _LABEL_MAP[f"{fault_type}{fault_size}"]
 
 
-def download_cwru(
-    save_dir: str = "data/raw/CWRU",
-    loads: list = None,
-    fault_types: list = None,
-) -> None:
+def download_cwru(save_dir: str = "data/raw/CWRU") -> None:
     """
-    Download CWRU .mat files.
+    Download CWRU dataset by cloning the GitHub mirror.
 
     Args:
-        save_dir:  Directory to save files
-        loads:     Motor loads to download, default [0, 1, 2, 3]
-        fault_types: Fault types, default ['Normal', 'IR', 'OR', 'B']
+        save_dir: Directory to save the dataset
     """
-    if loads is None:
-        loads = [0, 1, 2, 3]
-    if fault_types is None:
-        fault_types = ["Normal", "IR", "OR", "B"]
-
     save_path = Path(save_dir)
-    save_path.mkdir(parents=True, exist_ok=True)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
 
-    total = 0
-    downloaded = 0
-    skipped = 0
+    # Remove if empty (from previous failed clone)
+    if save_path.exists() and not any(save_path.iterdir()):
+        import shutil
+        shutil.rmtree(save_path)
 
-    for (ft, fs, ld), filename in CWRU_FILES.items():
-        if ft not in fault_types or ld not in loads:
-            continue
-        total += 1
-        filepath = save_path / filename
-        if filepath.exists():
-            skipped += 1
-            continue
+    if save_path.exists() and (save_path / "op_0").exists():
+        print(f"Dataset already exists at {save_dir}")
+        return
 
-        url = _BASE_URL + filename
-        try:
-            print(f"  Downloading {filename} ({ft}@{ld}hp)...", end=" ")
-            urllib.request.urlretrieve(url, filepath)
-            print("OK")
-            downloaded += 1
-        except urllib.error.URLError as e:
-            print(f"FAILED: {e}")
-            print(f"  → CWRU website may have changed URLs.")
-            print(f"  → Please manually download from:")
-            print(f"    https://engineering.case.edu/bearingdatacenter/download-data-file")
-            sys.exit(1)
+    print(f"Cloning CWRU dataset from GitHub mirror...")
+    print(f"  Repo: {_MIRROR_REPO}")
+    print(f"  To:   {save_dir}")
+    print(f"  This may take a few minutes (~200MB)...")
 
-    print(f"\nDone: {downloaded} downloaded, {skipped} already exist, {total} total.")
+    try:
+        subprocess.run(
+            ["git", "clone", "--depth", "1", _MIRROR_REPO, str(save_path)],
+            check=True, capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        print("ERROR: git not found. Install Git or download manually:")
+        print(f"  {_MIRROR_REPO}")
+        sys.exit(1)
+    except subprocess.CalledProcessError as e:
+        print(f"Clone failed: {e.stderr}")
+        print(f"\nManual download: visit {_MIRROR_REPO} → Code → Download ZIP")
+        print(f"Then extract to: {save_dir}")
+        sys.exit(1)
+
+    # Verify
+    for ld in range(4):
+        op_dir = save_path / f"op_{ld}"
+        if not op_dir.exists():
+            print(f"WARNING: {op_dir} not found — dataset may be incomplete")
+
+    print(f"Done. Dataset saved to {save_dir}")
+    _print_summary(save_path)
+
+
+def _print_summary(save_path: Path):
+    """Print a summary of the downloaded dataset."""
+    import os
+    total_mat = 0
+    class_count = {}
+    for root, _, files in os.walk(save_path):
+        for f in files:
+            if f.endswith(".mat"):
+                total_mat += 1
+                rel = Path(root).relative_to(save_path)
+                class_count[str(rel)] = class_count.get(str(rel), 0) + 1
+
+    print(f"\n{'='*50}")
+    print(f"Total .mat files: {total_mat}")
+    print(f"Classes found:")
+    for cls, cnt in sorted(class_count.items()):
+        print(f"  {cls}: {cnt} files")
+    print(f"{'='*50}")
 
 
 if __name__ == "__main__":
+    import argparse
     parser = argparse.ArgumentParser(description="Download CWRU bearing dataset")
     parser.add_argument("--save_dir", type=str, default="data/raw/CWRU")
-    parser.add_argument("--load", type=int, nargs="+", default=[0, 1, 2, 3])
-    parser.add_argument("--fault_type", type=str, nargs="+",
-                        default=["Normal", "IR", "OR", "B"])
     args = parser.parse_args()
 
     print("=" * 60)
     print("CWRU Bearing Dataset Downloader")
     print("=" * 60)
-    print(f"Save dir: {args.save_dir}")
-    print(f"Loads: {args.load}")
-    print(f"Fault types: {args.fault_type}")
-    print()
-
-    download_cwru(args.save_dir, args.load, args.fault_type)
+    download_cwru(args.save_dir)

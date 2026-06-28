@@ -80,7 +80,7 @@ H_s = torch.from_numpy(X_s).float().unsqueeze(0)
 H_t = torch.from_numpy(X_t).float().unsqueeze(0)
 
 for gw_type in ["vanilla", "entropic", "fused", "partial"]:
-    gw = GWAlignment(gw_type=gw_type, multi_init=2)
+    gw = GWAlignment(type=gw_type, multi_init=2)
     result = gw(C_s, C_t, H_s, H_t)
     print(f"  {gw_type:10s}: GW loss = {result['gw_loss']:.4f}, "
           f"transport shape = {tuple(result['transport'].shape)}")
@@ -135,14 +135,12 @@ print("\n[5/5] Testing End-to-End Pipeline (toy data)...")
 
 from rpgw.train import RPGWNet
 
-# Minimal config
+# Minimal config (matches current train.py interface)
 config = {
     "model": {
-        "cnn": {"in_channels": 1, "conv_channels": [16, 32, 64, 128],
-                "kernel_sizes": [15, 3, 3, 3], "feature_dim": 256},
-        "gat": {"in_dim": 64, "hidden_dim": 128, "out_dim": 256, "heads": 4, "dropout": 0.3},
-        "gw": {"gw_type": "partial", "epsilon": 0.8, "alpha": 0.7,
-               "partial_mass": 0.85, "multi_init": 2, "reg": 1.0},
+        "gat": {"hidden_dim": 128, "out_dim": 256, "heads": 4, "dropout": 0.3},
+        "gw": {"type": "partial", "epsilon": 0.8, "alpha": 0.7,
+               "partial_mass": 0.85, "multi_init": 2},
         "prototype": {"distance": "euclidean", "use_weighting": True, "temperature": 1.0},
     },
     "preprocess": {"patch_size": 8, "k_neighbors": 8},

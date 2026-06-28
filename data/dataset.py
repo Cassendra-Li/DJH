@@ -1,32 +1,59 @@
 """
 PyTorch Dataset & DataLoader for CWRU Bearing Fault Diagnosis.
 
-Loads preprocessed .npy files (CWT + graph) or processes raw .mat on-the-fly.
+Works with the GitHub mirror directory structure:
+    data/raw/CWRU/op_{load}/fault_type_{size}/X.mat
+
+Supports:
+- On-the-fly CWT + graph construction per sample
+- Noise injection at target SNR
+- Few-shot per-class sampling
 """
 
 import os
 import random
 from pathlib import Path
-from typing import Tuple, Dict, Optional
+from typing import Dict, Optional
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 
 from .preprocess import segment_signal, cwt_transform, build_graph, add_noise, normalize
-from .download_cwru import CWRU_FILES, get_label, NUM_CLASSES
+
+# ========== Directory name → (fault_type, fault_size) ==========
+_DIR_TO_FAULT = {
+    "normal":    ("Normal", None),
+    "inner_07":  ("IR", "007"),
+    "inner_14":  ("IR", "014"),
+    "inner_21":  ("IR", "021"),
+    "outer_07":  ("OR", "007"),
+    "outer_14":  ("OR", "014"),
+    "outer_21":  ("OR", "021"),
+    "ball_07":   ("B", "007"),
+    "ball_14":   ("B", "014"),
+    "ball_21":   ("B", "021"),
+}
+
+# ========== Label mapping ==========
+_LABEL_MAP = {
+    "Normal": 0,
+    "IR007": 1, "IR014": 2, "IR021": 3,
+    "OR007": 4, "OR014": 5, "OR021": 6,
+    "B007": 7,  "B014": 8,  "B021": 9,
+}
+
+NUM_CLASSES = 10
+
+
+def get_label(fault_type: str, fault_size: str = None) -> int:
+    if fault_type == "Normal":
+        return _LABEL_MAP["Normal"]
+    return _LABEL_MAP[f"{fault_type}{fault_size}"]
 
 
 class CWRUDataset(Dataset):
-    """
-    CWRU Bearing Fault Diagnosis Dataset.
-
-    Supports:
-    - Raw .mat loading → on-the-fly CWT + graph construction
-    - Preprocessed .npy caching (fast)
-    - Noise injection
-    - Few-shot sampling per class
-    """
+    """Loads .mat files, segments, applies CWT, builds graphs."""
 
     def __init__(
         self,
@@ -42,24 +69,7 @@ class CWRUDataset(Dataset):
         noise_snr_db: float = float("inf"),
         noise_type: str = "gaussian",
         n_shot: Optional[int] = None,
-        cache_dir: Optional[str] = None,
     ):
-        """
-        Args:
-            data_dir:     Directory containing .mat files
-            load_hp:      Motor load (0, 1, 2, or 3 hp)
-            norm_type:    Normalization type
-            window_size:  Samples per sliding window
-            cwt_scales:   CWT scale count
-            cwt_wavelet:  Mother wavelet
-            patch_size:   TF patch size for graph nodes
-            k_neighbors:  k for kNN graph
-            denoise:      Enable adaptive denoising
-            noise_snr_db: Target SNR. inf = no noise
-            noise_type:   Noise distribution
-            n_shot:       Limit samples per class (few-shot). None = all.
-            cache_dir:    Directory for preprocessed .npy cache
-        """
         self.data_dir = Path(data_dir)
         self.load_hp = load_hp
         self.norm_type = norm_type
@@ -73,108 +83,107 @@ class CWRUDataset(Dataset):
         self.noise_type = noise_type
         self.n_shot = n_shot
 
-        # ---- Load raw signals ---- #
         self.samples: list = []  # list of (signal_1d, label_int)
         self._load_mat_files()
 
-        # Few-shot sampling
         if n_shot is not None:
             self._few_shot_sample(n_shot)
 
     def _load_mat_files(self):
-        """Read .mat files, segment into windows, normalize, store."""
+        """Walk op_{load}/ directory, load .mat files."""
         import scipy.io as sio
 
-        for (ft, fs, ld), filename in CWRU_FILES.items():
-            if ld != self.load_hp:
+        op_dir = self.data_dir / f"op_{self.load_hp}"
+        if not op_dir.exists():
+            raise RuntimeError(
+                f"Directory {op_dir} not found. "
+                f"Run 'python data/download_cwru.py' first."
+            )
+
+        for fault_dir_name, (ft, fs) in _DIR_TO_FAULT.items():
+            fault_path = op_dir / fault_dir_name
+            if not fault_path.exists():
                 continue
-            filepath = self.data_dir / filename
-            if not filepath.exists():
-                print(f"  [WARNING] {filename} not found, skipping {ft}@{ld}hp")
-                continue
 
-            mat = sio.loadmat(filepath)
+            for mat_file in sorted(fault_path.glob("*.mat")):
+                try:
+                    mat = sio.loadmat(mat_file)
+                except Exception:
+                    continue
 
-            # CWRU .mat files have DE (drive-end) vibration data
-            # Find the right key
-            de_keys = [k for k in mat.keys() if "DE" in k.upper() and not k.startswith("_")]
-            if not de_keys:
-                continue
-            raw_signal = mat[de_keys[0]].squeeze().astype(np.float32)
+                # Find DE (drive-end) vibration data key
+                de_keys = [k for k in mat.keys()
+                           if "DE" in k.upper() and not k.startswith("_")]
+                if not de_keys:
+                    continue
 
-            # Segment into windows
-            windows = segment_signal(raw_signal, self.window_size, overlap=0.0)
+                raw_signal = mat[de_keys[0]].squeeze().astype(np.float32)
 
-            # Normalize each window
-            windows = np.array([normalize(w, self.norm_type) for w in windows])
+                # Segment into windows
+                windows = segment_signal(raw_signal, self.window_size, overlap=0.0)
+                windows = np.array([normalize(w, self.norm_type) for w in windows])
 
-            # Assign label
-            label = get_label(ft, fs)
+                label = get_label(ft, fs)
+                for w in windows:
+                    self.samples.append((w, label))
 
-            for w in windows:
-                self.samples.append((w, label))
+        # Report
+        class_counts = {}
+        for _, lbl in self.samples:
+            class_counts[lbl] = class_counts.get(lbl, 0) + 1
+        print(f"  [Load {self.load_hp}] Loaded {len(self.samples)} windows "
+              f"from {len(class_counts)} classes: {dict(sorted(class_counts.items()))}")
 
         if not self.samples:
             raise RuntimeError(
-                f"No data found for load_hp={self.load_hp} in {self.data_dir}. "
-                f"Run 'python data/download_cwru.py' first."
+                f"No data found for load_hp={self.load_hp} in {op_dir}."
             )
 
     def _few_shot_sample(self, n_shot: int):
         """Keep only n_shot samples per class."""
         class_samples = {lbl: [] for lbl in range(NUM_CLASSES)}
         for sig, lbl in self.samples:
-            class_samples[lbl].append((sig, lbl))
+            if lbl in class_samples:
+                class_samples[lbl].append((sig, lbl))
 
         sampled = []
         for lbl, items in class_samples.items():
-            if len(items) > n_shot:
+            if items and len(items) > n_shot:
                 sampled.extend(random.sample(items, n_shot))
-            else:
+            elif items:
                 sampled.extend(items)
 
         self.samples = sampled
         random.shuffle(self.samples)
+        print(f"  Few-shot (n={n_shot}): {len(self.samples)} samples total")
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        """
-        Returns:
-            Dict with keys:
-                'signal':      raw 1D signal (1, window_size)
-                'cwt':         time-frequency map (cwt_scales, window_size)
-                'node_feat':   graph node features (n_nodes, patch_size²)
-                'adj':         adjacency matrix (n_nodes, n_nodes)
-                'cost':        pairwise distance matrix (n_nodes, n_nodes)
-                'label':       class label (int)
-        """
         signal, label = self.samples[idx]
 
         # Noise injection
         if self.noise_snr_db != float("inf"):
             signal = add_noise(signal, self.noise_snr_db, self.noise_type)
 
-        # CWT → time-frequency map
+        # CWT
         cwt_map = cwt_transform(signal, self.cwt_scales, self.cwt_wavelet)
 
-        # Optional denoising
+        # Denoise
         if self.denoise:
             from .preprocess import adaptive_denoise
             cwt_map = adaptive_denoise(cwt_map)
 
-        # Graph construction
-        node_feat, adj, cost = build_graph(
-            cwt_map, self.patch_size, self.k_neighbors
-        )
+        # Graph
+        node_feat, adj, cost = build_graph(cwt_map, self.patch_size, self.k_neighbors)
 
         return {
-            "signal":    torch.from_numpy(signal[None, :]).float(),   # (1, 1024)
-            "cwt":       torch.from_numpy(cwt_map).float(),            # (64, 1024)
-            "node_feat": torch.from_numpy(node_feat).float(),          # (N_nodes, feat_dim)
-            "adj":       torch.from_numpy(adj).float(),                # (N_nodes, N_nodes)
-            "cost":      torch.from_numpy(cost).float(),               # (N_nodes, N_nodes)
+            "signal":    torch.from_numpy(signal[None, :]).float(),
+            "cwt":       torch.from_numpy(cwt_map).float(),
+            "node_feat": torch.from_numpy(node_feat).float(),
+            "adj":       torch.from_numpy(adj).float(),
+            "cost":      torch.from_numpy(cost).float(),
             "label":     torch.tensor(label, dtype=torch.long),
         }
 
@@ -192,18 +201,9 @@ def get_dataloaders(
     """
     Get train/test dataloaders for source and target domains.
 
-    Args:
-        data_dir:     Path to .mat files
-        source_load:  Source domain motor load (e.g., 0)
-        target_load:  Target domain motor load (e.g., 3)
-        batch_size:   Batch size
-        n_shot:       Few-shot samples per class in target train
-        noise_snr_db: Noise level applied to TARGET domain
-        num_workers:  DataLoader workers
-        **dataset_kwargs: Passed to CWRUDataset
-
     Returns:
-        {'source_train': DL, 'source_test': DL, 'target_train': DL, 'target_test': DL}
+        {'source_train': DL, 'source_test': DL,
+         'target_train': DL, 'target_test': DL}
     """
     # Source domain (no noise, full data)
     source_full = CWRUDataset(
@@ -215,9 +215,8 @@ def get_dataloaders(
         n_shot=n_shot, **dataset_kwargs
     )
 
-    # Split: 80% train, 20% test
-    n_src = len(source_full)
-    n_tgt = len(target_full)
+    # 80/20 split
+    n_src, n_tgt = len(source_full), len(target_full)
     src_train, src_test = torch.utils.data.random_split(
         source_full, [int(0.8 * n_src), n_src - int(0.8 * n_src)]
     )
@@ -226,7 +225,7 @@ def get_dataloaders(
     )
 
     loader_kwargs = dict(batch_size=batch_size, num_workers=num_workers,
-                         pin_memory=True, drop_last=False)
+                         pin_memory=True, drop_last=True)
 
     return {
         "source_train": DataLoader(src_train, shuffle=True, **loader_kwargs),

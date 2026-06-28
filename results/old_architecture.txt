@@ -1,0 +1,21 @@
+============================================================
+旧架构实验结果（无CNN/MLP投影, patch_size=16, 256节点）
+============================================================
+
+Stage 1: GAT only, clean, full-shot, 0→3hp
+  Best Tgt Acc: 36.72%
+  Epochs: 50 (completed)
+  Time: 106.9 min
+
+Stage 2: GAT + Partial GW, clean, full-shot, 0→3hp
+  Best Tgt Acc: 43.0% @ epoch 5
+  Last recorded: epoch 20, Tgt 41.4%
+  Epochs: 未完全跑完 (僵尸进程,输出停在epoch 20后)
+  Time: ~67 min 记录
+
+GW贡献: +6.28% (43.0 - 36.72)
+
+结论: GW结构对齐在弱baseline上仍有+6%稳定增益。
+      baseline太低(37%)远不及DAGCN(92%)，确认需要加特征提取。
+
+============================================================

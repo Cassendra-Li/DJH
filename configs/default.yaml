@@ -14,7 +14,7 @@ preprocess:
   cwt_scales: 64                   # Number of CWT scales (= patch count)
   cwt_wavelet: "morl"              # Mother wavelet: morl | cmor | mexican_hat
   denoise: true                   # Enable adaptive wavelet threshold denoising
-  patch_size: 8                    # Time-frequency patch size (pixels)
+  patch_size: 16                   # Time-frequency patch size (pixels)  16->256 nodes
   k_neighbors: 8                   # kNN graph: number of neighbors
 
 # ================== Model Architecture ==================
@@ -30,7 +30,7 @@ model:
 
   # Graph Attention Network
   gat:
-    in_dim: 64                     # CWT scale dimension → node feature dim
+    in_dim: 256                    # Node feature dim = patch_size² (16²=256)
     hidden_dim: 128
     out_dim: 256
     heads: 4
@@ -38,35 +38,37 @@ model:
 
   # GW Alignment
   gw:
-    type: "partial"               # vanilla | entropic | fused | partial
-    epsilon: 0.8                   # Entropic reg (for EGW)
-    alpha: 0.7                     # Feature vs Structure balance (for FGW)
-    partial_mass: 0.85             # Transport mass ratio (for Partial GW)
-    multi_init: 5                  # GW_MultiInit restart count
+    type: "none"                   # vanilla | entropic | fused | partial | none
+    epsilon: 0.8
+    alpha: 0.7
+    partial_mass: 0.85
+    multi_init: 5
 
   # Prototype Classifier
   prototype:
     distance: "euclidean"          # euclidean | cosine
-    weighting: true                # Weight prototypes by GW quality?
+    use_weighting: true            # Weight prototypes by GW quality?
+    temperature: 1.0
 
 # ================== Training ==================
 train:
   method: "few_shot"               # standard | few_shot
   n_shot: 5                        # Samples per class in target domain
   n_way: 10                        # Number of fault classes
-  batch_size: 64
-  epochs: 300
+  batch_size: 8
+  epochs: 200                      # 50 pretrain + 150 with GW
   pretrain_epochs: 50              # Epochs before GW alignment activates
+  gw_warmup_epochs: 20             # Epochs for GW weight to ramp up (sigmoid)
   lr: 0.001
-  lr_decay_milestones: [150, 250]
+  lr_decay_milestones: [100, 150]
   lr_decay_gamma: 0.1
-  weight_decay: 1e-5
+  weight_decay: 0.00001
   optimizer: "adam"
 
   # Loss weights
   loss:
     cls_weight: 1.0                # Classification loss
-    gw_weight: 0.5                 # GW alignment loss
+    gw_weight: 0.3                 # GW alignment loss (reduced: CNN gives strong CE)
     domain_weight: 0.3             # Domain adversarial loss (optional)
 
 # ================== Noise Settings ==================
