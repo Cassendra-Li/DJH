@@ -1,0 +1,87 @@
+# RPGW-Net Default Configuration
+# Usage: python experiments/run_rpgw.py --config configs/default.yaml
+
+# ================== Dataset ==================
+data:
+  name: "CWRU"                    # Dataset name
+  data_dir: "data/raw/CWRU"       # Raw data path (auto-downloaded)
+  norm_type: "z-score"             # z-score | min-max
+  signal_len: 1024                 # Sliding window length
+  overlap: 0.0                     # Overlap ratio
+
+# ================== Preprocessing ==================
+preprocess:
+  cwt_scales: 64                   # Number of CWT scales (= patch count)
+  cwt_wavelet: "morl"              # Mother wavelet: morl | cmor | mexican_hat
+  denoise: true                   # Enable adaptive wavelet threshold denoising
+  patch_size: 8                    # Time-frequency patch size (pixels)
+  k_neighbors: 8                   # kNN graph: number of neighbors
+
+# ================== Model Architecture ==================
+model:
+  name: "RPGW-Net"
+
+  # 1D-CNN feature extractor (same as DAGCN for fair comparison)
+  cnn:
+    in_channels: 1
+    conv_channels: [16, 32, 64, 128]  # per-layer channels
+    kernel_sizes: [15, 3, 3, 3]
+    feature_dim: 256
+
+  # Graph Attention Network
+  gat:
+    in_dim: 64                     # CWT scale dimension → node feature dim
+    hidden_dim: 128
+    out_dim: 256
+    heads: 4
+    dropout: 0.3
+
+  # GW Alignment
+  gw:
+    type: "partial"               # vanilla | entropic | fused | partial
+    epsilon: 0.8                   # Entropic reg (for EGW)
+    alpha: 0.7                     # Feature vs Structure balance (for FGW)
+    partial_mass: 0.85             # Transport mass ratio (for Partial GW)
+    multi_init: 5                  # GW_MultiInit restart count
+
+  # Prototype Classifier
+  prototype:
+    distance: "euclidean"          # euclidean | cosine
+    weighting: true                # Weight prototypes by GW quality?
+
+# ================== Training ==================
+train:
+  method: "few_shot"               # standard | few_shot
+  n_shot: 5                        # Samples per class in target domain
+  n_way: 10                        # Number of fault classes
+  batch_size: 64
+  epochs: 300
+  pretrain_epochs: 50              # Epochs before GW alignment activates
+  lr: 0.001
+  lr_decay_milestones: [150, 250]
+  lr_decay_gamma: 0.1
+  weight_decay: 1e-5
+  optimizer: "adam"
+
+  # Loss weights
+  loss:
+    cls_weight: 1.0                # Classification loss
+    gw_weight: 0.5                 # GW alignment loss
+    domain_weight: 0.3             # Domain adversarial loss (optional)
+
+# ================== Noise Settings ==================
+noise:
+  enabled: true
+  type: "gaussian"                 # gaussian | laplacian | uniform
+  target_snr_db: 5                  # SNR in dB: inf (no noise) | 10 | 5 | 0 | -5
+  apply_to: "target"               # source | target | both
+
+# ================== Experiment ==================
+experiment:
+  name: "rpgw_default"
+  seed: 42
+  device: "cuda"
+  checkpoint_dir: "checkpoints/"
+  log_dir: "logs/"
+  save_every: 50                    # Save checkpoint every N epochs
+  eval_metric: "accuracy"           # accuracy | f1 | auc
